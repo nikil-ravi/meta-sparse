@@ -56,6 +56,8 @@ class SceneNetLoss(nn.Module):
             self.depth = targets['depth']
             if self.dataset == "taskonomy":
                 self.depth_mask = targets['depth_mask']
+            if self.dataset == "nyuv2":
+                self.depth_mask = targets['depth']
             mult = self.lambdas[self.tasks.index('depth')]
             depth_loss = self.get_depth_loss()
             total_loss += depth_loss*mult
@@ -104,6 +106,10 @@ class SceneNetLoss(nn.Module):
         return loss
     ###########################################################################################
     def get_depth_loss(self):
+
+        print(self.dataset)
+        print("\n\n\n\n\n")
+
         new_shape = self.depth_pred.shape[-2:]
         depth_resize = F.interpolate(self.depth.float(), size=new_shape)
         if self.dataset == "cityscapes":
@@ -118,6 +124,20 @@ class SceneNetLoss(nn.Module):
             if hasattr(self, 'depth_mask'):
                 depth_mask_resize = F.interpolate(self.depth_mask.float(), size=new_shape)
                 binary_mask = (depth_resize != 255) * (depth_mask_resize.int() == 1).to(self.device)
+            else:
+                raise ValueError('Dataset %s is invalid' % self.dataset)
+            depth_output = self.depth_pred.masked_select(binary_mask)
+            depth_gt = depth_resize.masked_select(binary_mask)
+            loss = self.l1_loss(depth_output, depth_gt)
+            return loss
+        elif self.dataset == "nyuv2":
+            # not in original codebase, added afterwards
+            print("\n\n\n\n\n")
+
+            print
+            if hasattr(self, 'depth_mask'):
+                depth_mask_resize = F.interpolate(self.depth_mask.float(), size=new_shape)
+                binary_mask = (torch.sum(depth_resize, dim=1) > 3 * 1e-5).unsqueeze(1).to(self.device)
             else:
                 raise ValueError('Dataset %s is invalid' % self.dataset)
             depth_output = self.depth_pred.masked_select(binary_mask)
