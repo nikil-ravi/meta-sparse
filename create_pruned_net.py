@@ -80,7 +80,7 @@ def create_disparse_pt_nyuv2(net, ratio, criterion, train_loader, num_batches, d
         keep_ratio = 0.7
     else:
         keep_ratio = (100 - ratio) / 100
-    net.load_state_dict(torch.load(f"/data/alexsun/save_model/nyu_v2/final_seg_sn.pth"))
+    net.load_state_dict(torch.load(f"/home/onkard/project/meta-sparse/results/final_nyuv2_baseline.pth"))
     # net.load_state_dict(torch.load(f"{dest}/final_seg_sn.pth"))
     net = disparse_prune_pretrained_l1(net, criterion, train_loader, num_batches, keep_ratio, device, tasks)
     return net

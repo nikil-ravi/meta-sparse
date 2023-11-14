@@ -107,9 +107,6 @@ class SceneNetLoss(nn.Module):
     ###########################################################################################
     def get_depth_loss(self):
 
-        print(self.dataset)
-        print("\n\n\n\n\n")
-
         new_shape = self.depth_pred.shape[-2:]
         depth_resize = F.interpolate(self.depth.float(), size=new_shape)
         if self.dataset == "cityscapes":
@@ -132,14 +129,13 @@ class SceneNetLoss(nn.Module):
             return loss
         elif self.dataset == "nyuv2":
             # not in original codebase, added afterwards
-            print("\n\n\n\n\n")
+            # TODO verify if depthmask_resize and Invalid dataset error is needed here
 
-            print
             if hasattr(self, 'depth_mask'):
                 depth_mask_resize = F.interpolate(self.depth_mask.float(), size=new_shape)
-                binary_mask = (torch.sum(depth_resize, dim=1) > 3 * 1e-5).unsqueeze(1).to(self.device)
             else:
                 raise ValueError('Dataset %s is invalid' % self.dataset)
+            binary_mask = (torch.sum(depth_resize, dim=1) > 3 * 1e-5).unsqueeze(1).to(self.device)
             depth_output = self.depth_pred.masked_select(binary_mask)
             depth_gt = depth_resize.masked_select(binary_mask)
             loss = self.l1_loss(depth_output, depth_gt)

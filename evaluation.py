@@ -77,6 +77,8 @@ class SceneNetEval():
             self.depth = targets['depth']
             if self.dataset == "taskonomy":
                 self.depth_mask = targets['depth_mask']
+            # elif self.dataset == "nyuv2":
+            #     self.depth_mask = targets['depth']
         if 'keypoint' in self.tasks:
             self.keypoint_pred = preds[self.tasks.index('keypoint')]
             self.keypoint = targets['keypoint']
@@ -124,7 +126,7 @@ class SceneNetEval():
         return cos_similarity.cpu().numpy()
     ################################################################################################
     def depth_error(self):
-        if self.dataset == "cityscapes":
+        if self.dataset == "cityscapes" or self.dataset == "nyuv2":
             binary_mask = (torch.sum(self.depth, dim=1) > 3 * 1e-5).unsqueeze(1).to(self.device)
         else:
             binary_mask = (self.depth != 255) * (self.depth_mask.int() == 1)

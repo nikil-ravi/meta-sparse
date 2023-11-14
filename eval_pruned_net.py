@@ -43,6 +43,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     network_name = f"best_{dataset}_{method}_{ratio}"
+    # network_name = f"{dataset}_{method}_{ratio}"
     save_path = f"{args.model_path}/{network_name}.pth"
     log_file = open(f"logs/{network_name}.txt", "w")
 
