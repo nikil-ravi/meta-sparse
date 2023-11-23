@@ -9,6 +9,7 @@ import types
 from torch.autograd import Variable
 import torch.nn.utils.prune as prune
 import torch.nn.functional as F
+import pickle
 
 ################################################################################################
 # Overwrite PyTorch forward function for Conv2D and Linear to take the mask into account
@@ -383,7 +384,9 @@ def disparse_prune_pretrained_l1(net, criterion, train_loader, num_batches, keep
             
         print(torch.sum(torch.cat([torch.flatten(x == 1) for x in keep_masks[task]])))
     
-    
+    with open("keepmasks.txt", 'wb') as file:
+        pickle.dump(keep_masks, file)
+
     parameters_to_prune = []
 
     for layer in net.modules():
