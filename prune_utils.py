@@ -49,6 +49,8 @@ def disparse_prune_static(net, criterion, train_loader, num_batches, keep_ratio,
     train_iter = iter(train_loader)
     for i in range(num_batches):
 
+        print("batch: ", i)
+
         gt_batch = None
         preds = None
         loss = None
@@ -89,8 +91,11 @@ def disparse_prune_static(net, criterion, train_loader, num_batches, keep_ratio,
     loss = None
     # Calculate Threshold
     keep_masks = {}
+    keep_saliencies = {}
     for task in tasks:
         keep_masks[task] = []
+        keep_saliencies[task] = []
+
 
     # Get importance scores for each task independently
     for i, task in enumerate(tasks):
@@ -105,9 +110,15 @@ def disparse_prune_static(net, criterion, train_loader, num_batches, keep_ratio,
 
         for g in cur_grads_abs:
             keep_masks[task].append(((g / norm_factor) >= acceptable_score).int())
+            keep_saliencies[task].append((g/norm_factor))
 
         print(torch.sum(torch.cat([torch.flatten(x == 1) for x in keep_masks[task]])))
     
+    with open("sal_masks_static.txt", 'wb') as file:
+        pickle.dump({"masks": keep_masks, "sals": keep_saliencies}, file)
+
+    exit()
+
     # Use PyTorch Prune to set hooks
     parameters_to_prune = []
 
@@ -384,9 +395,6 @@ def disparse_prune_pretrained_l1(net, criterion, train_loader, num_batches, keep
             
         print(torch.sum(torch.cat([torch.flatten(x == 1) for x in keep_masks[task]])))
     
-    with open("keepmasks.txt", 'wb') as file:
-        pickle.dump(keep_masks, file)
-
     parameters_to_prune = []
 
     for layer in net.modules():

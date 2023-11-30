@@ -11,7 +11,7 @@ def train(net, dataset, criterion, optimizer, scheduler, train_loader, test_load
     flag = False
     best_test_loss = None
     lr = 0
-    save_int = 10000 if dataset == "taskonomy" else 5000
+    save_int = 10000 if dataset == "taskonomy" else 1000
     test_int = 10000 if dataset == "taskonomy" else 50
     
     while True:
