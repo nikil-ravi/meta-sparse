@@ -150,24 +150,26 @@ def compute_task_subnetworks(net, criterion, train_loader, num_batches, ratios, 
         for task in tasks:
             masks[keep_ratio][task] = []
             saliencies[keep_ratio][task] = []
+    
+    print(ratios)
 
-    for keep_ratio in ratios:
+    for task in tasks:
+        cur_grads_abs = grads_abs[task]
+        all_scores = torch.cat([torch.flatten(x) for x in cur_grads_abs])
+        norm_factor = torch.sum(all_scores)
+        all_scores.div_(norm_factor)
+    
+        for keep_ratio in ratios:
 
-        # Get importance scores for each task independently
-        for i, task in enumerate(tasks):
-            cur_grads_abs = grads_abs[task]
-            all_scores = torch.cat([torch.flatten(x) for x in cur_grads_abs])
-            norm_factor = torch.sum(all_scores)
-            all_scores.div_(norm_factor)
+            print(keep_ratio)
 
-            for keep_ratio in ratios:
-                num_params_to_keep = int(len(all_scores) * keep_ratio)
-                threshold, _ = torch.topk(all_scores, num_params_to_keep, sorted=True)
-                acceptable_score = threshold[-1]
+            num_params_to_keep = int(len(all_scores) * keep_ratio)
+            threshold, _ = torch.topk(all_scores, num_params_to_keep, sorted=True)
+            acceptable_score = threshold[-1]
 
-                for g in cur_grads_abs:
-                    masks[keep_ratio][task].append(((g / norm_factor) >= acceptable_score).int())
-                    saliencies[keep_ratio][task].append((g/norm_factor))
+            for g in cur_grads_abs:
+                masks[keep_ratio][task].append(((g / norm_factor) >= acceptable_score).int())
+                saliencies[keep_ratio][task].append((g/norm_factor))
 
     return masks, saliencies
 
@@ -216,18 +218,20 @@ def subnet_similarity(mask1, mask2, sal1, sal2, model):
 def get_pairwise_similarities(task_masks, task_saliencies, net, ratios):
     similarity_dict = {}
     for ratio in ratios:
-        for task1 in task_masks:
-            for task2 in task_masks:
-                if (task2 + "_" + task1) in similarity_dict or (task1 + "_" + task2) in similarity_dict:
+        similarity_dict[ratio] = {}
+        for task1 in task_masks[ratio]:
+            for task2 in task_masks[ratio]:
+                if (task2 + "_" + task1) in similarity_dict[ratio] or (task1 + "_" + task2) in similarity_dict[ratio]:
                     continue
-            similarity_dict[ratio][task1+"_"+task2] = subnet_similarity(task_masks[ratio][task1], task_masks[ratio][task2], task_saliencies[ratio][task1], task_saliencies[ratio][task2], net)
+                similarity_dict[ratio][task1+"_"+task2] = subnet_similarity(task_masks[ratio][task1], task_masks[ratio][task2], task_saliencies[ratio][task1], task_saliencies[ratio][task2], net)
     
     print("Similarity Scores With Different Ratios: ")
     pprint.PrettyPrinter(width=20).pprint(similarity_dict)
     # for each pair of tasks, average the similarity scores across all ratios
     averaged_similarity_dict = {}
-    for task1 in task_masks:
-        for task2 in task_masks:
+    tasks = TASKS
+    for task1 in tasks:
+        for task2 in tasks:
             if (task2 + "_" + task1) in averaged_similarity_dict or (task1 + "_" + task2) in averaged_similarity_dict:
                 continue
             averaged_similarity_dict[task1+"_"+task2] = 0
@@ -237,8 +241,9 @@ def get_pairwise_similarities(task_masks, task_saliencies, net, ratios):
 
     return averaged_similarity_dict
 
-def store_subnetworks(filename, task_masks, task_saliencies):
-    with open(filename, 'wb') as f:
+def store_subnetworks(dir, task_masks, task_saliencies):
+    os.makedirs(dir, exist_ok=True)
+    with open(dir+"/subnets.txt", 'wb') as f:
         pickle.dump({"masks": task_masks, "sals": task_saliencies}, f)
 
 if __name__ == "__main__":
@@ -248,13 +253,13 @@ if __name__ == "__main__":
     parser.add_argument('--num_batches',type=int, help='number of batches to estimate importance', default=5)
     parser.add_argument('--sim_method', type=str, help='method name', default="iou")
     parser.add_argument('--sparsities',type=str, help='sparsity levels', default="30,50,70,90") 
-    parser.add_argument('--subnet_dir',type=str, help='directory to store subnetworks', default="./subnetworks/subnets.txt")
+    parser.add_argument('--subnet_dump_dir',type=str, help='directory to store subnetworks', default="./subnetworks/")
     args = parser.parse_args()
 
     dataset = args.dataset
     num_batches = args.num_batches
     sim_method = args.sim_method
-    subnet_dir = args.subnet_dir
+    subnet_dump_dir = args.subnet_dump_dir
     sparsities = [int(sparsity) for sparsity in args.sparsities.split(",")]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -292,8 +297,8 @@ if __name__ == "__main__":
     
     task_masks, task_saliencies = compute_task_subnetworks(net, criterion, train_loader, num_batches, ratios, device, tasks=TASKS)
 
-    store_subnetworks(args.subnet_dump, task_masks, task_saliencies)
+    store_subnetworks(subnet_dump_dir, task_masks, task_saliencies)
 
-    pairwise_task_similarities = get_pairwise_similarities(task_masks, task_saliencies, net)
+    pairwise_task_similarities = get_pairwise_similarities(task_masks, task_saliencies, net, ratios)
     print("Pairwise Similarity Scores Averaged Across Ratios: ")
     pprint.PrettyPrinter(width=20).pprint(pairwise_task_similarities)
