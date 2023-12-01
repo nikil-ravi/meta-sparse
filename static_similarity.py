@@ -25,46 +25,51 @@ def hook_forward_conv2d(self, x):
 def hook_forward_linear(self, x):
         return F.linear(x, self.weight * self.weight_mask, self.bias)
 
-def map_sparsity_to_keep_ratio(sparsity, dataset):
+def map_sparsity_to_keep_ratio(sparsities, dataset):
 
-    if dataset == "nyuv2":
-        if sparsity == 90:
-            keep_ratio = 0.08
-        elif sparsity == 70:
-            keep_ratio = 0.257
-        elif sparsity == 50:
-            keep_ratio = 0.46
-        elif sparsity == 30:
-            keep_ratio = 0.675
-        else:
-            keep_ratio = (100 - sparsity) / 100
-    elif dataset == "cityscapes":
-        if sparsity == 90:
-            keep_ratio = 0.095
-        elif sparsity == 70:
-            keep_ratio = 0.3
-        elif sparsity == 50:
-            keep_ratio = 0.51
-        elif sparsity == 30:
-            keep_ratio = 0.71
-        else:
-            keep_ratio = (100 - sparsity) / 100
-    elif dataset == "taskonomy":
-        if sparsity == 90:
-            keep_ratio = 0.097
-        elif sparsity == 70:
-            keep_ratio = 0.257
-        elif sparsity == 50:
-            keep_ratio = 0.46
-        elif sparsity == 30:
-            keep_ratio = 0.675
-        else:
-            keep_ratio = (100 - sparsity) / 100
-    else:
-        print("Unrecognized Dataset Name.")
-        exit()
+    ratios = []
 
-    return keep_ratio
+    for sparsity in sparsities:
+        if dataset == "nyuv2":
+            if sparsity == 90:
+                keep_ratio = 0.08
+            elif sparsity == 70:
+                keep_ratio = 0.257
+            elif sparsity == 50:
+                keep_ratio = 0.46
+            elif sparsity == 30:
+                keep_ratio = 0.675
+            else:
+                keep_ratio = (100 - sparsity) / 100
+        elif dataset == "cityscapes":
+            if sparsity == 90:
+                keep_ratio = 0.095
+            elif sparsity == 70:
+                keep_ratio = 0.3
+            elif sparsity == 50:
+                keep_ratio = 0.51
+            elif sparsity == 30:
+                keep_ratio = 0.71
+            else:
+                keep_ratio = (100 - sparsity) / 100
+        elif dataset == "taskonomy":
+            if sparsity == 90:
+                keep_ratio = 0.097
+            elif sparsity == 70:
+                keep_ratio = 0.257
+            elif sparsity == 50:
+                keep_ratio = 0.46
+            elif sparsity == 30:
+                keep_ratio = 0.675
+            else:
+                keep_ratio = (100 - sparsity) / 100
+        else:
+            print("Unrecognized Dataset Name.")
+            exit()
+
+        ratios.append(keep_ratio)
+
+    return ratios    
 
 ################################################################################################
 # Returns masks and saliency scores of parameters for each task.
@@ -73,7 +78,7 @@ def map_sparsity_to_keep_ratio(sparsity, dataset):
 # train_loader: dataloader to fetch data batches used to estimate importance
 # keep_ratio: how many parameters to keep
 # tasks: set of tasks
-def compute_task_subnetworks(net, criterion, train_loader, num_batches, keep_ratio, device, tasks):
+def compute_task_subnetworks(net, criterion, train_loader, num_batches, ratios, device, tasks):
     test_net = deepcopy(net)
     grads_abs = {}
     for task in tasks:
@@ -139,30 +144,30 @@ def compute_task_subnetworks(net, criterion, train_loader, num_batches, keep_rat
     # Calculate Threshold
     masks = {}
     saliencies = {}
-    for task in tasks:
-        masks[task] = []
-        saliencies[task] = []
+    for keep_ratio in ratios:
+        masks[keep_ratio] = {}
+        saliencies[keep_ratio] = {}
+        for task in tasks:
+            masks[keep_ratio][task] = []
+            saliencies[keep_ratio][task] = []
 
+    for keep_ratio in ratios:
 
-    # Get importance scores for each task independently
-    for i, task in enumerate(tasks):
-        cur_grads_abs = grads_abs[task]
-        all_scores = torch.cat([torch.flatten(x) for x in cur_grads_abs])
-        norm_factor = torch.sum(all_scores)
-        all_scores.div_(norm_factor)
+        # Get importance scores for each task independently
+        for i, task in enumerate(tasks):
+            cur_grads_abs = grads_abs[task]
+            all_scores = torch.cat([torch.flatten(x) for x in cur_grads_abs])
+            norm_factor = torch.sum(all_scores)
+            all_scores.div_(norm_factor)
 
-        num_params_to_keep = int(len(all_scores) * keep_ratio)
-        threshold, _ = torch.topk(all_scores, num_params_to_keep, sorted=True)
-        acceptable_score = threshold[-1]
+            for keep_ratio in ratios:
+                num_params_to_keep = int(len(all_scores) * keep_ratio)
+                threshold, _ = torch.topk(all_scores, num_params_to_keep, sorted=True)
+                acceptable_score = threshold[-1]
 
-        for g in cur_grads_abs:
-            masks[task].append(((g / norm_factor) >= acceptable_score).int())
-            saliencies[task].append((g/norm_factor))
-
-        print(torch.sum(torch.cat([torch.flatten(x == 1) for x in masks[task]])))
-
-    with open("sal_masks_static_new.txt", 'wb') as file:
-        pickle.dump({"masks": masks, "sals": saliencies}, file)
+                for g in cur_grads_abs:
+                    masks[keep_ratio][task].append(((g / norm_factor) >= acceptable_score).int())
+                    saliencies[keep_ratio][task].append((g/norm_factor))
 
     return masks, saliencies
 
@@ -208,29 +213,50 @@ def subnet_similarity(mask1, mask2, sal1, sal2, model):
     
     return weighted_average(sim_scores)
 
-def get_pairwise_similarities(task_masks, task_saliencies, net):
+def get_pairwise_similarities(task_masks, task_saliencies, net, ratios):
     similarity_dict = {}
+    for ratio in ratios:
+        for task1 in task_masks:
+            for task2 in task_masks:
+                if (task2 + "_" + task1) in similarity_dict or (task1 + "_" + task2) in similarity_dict:
+                    continue
+            similarity_dict[ratio][task1+"_"+task2] = subnet_similarity(task_masks[ratio][task1], task_masks[ratio][task2], task_saliencies[ratio][task1], task_saliencies[ratio][task2], net)
+    
+    print("Similarity Scores With Different Ratios: ")
+    pprint.PrettyPrinter(width=20).pprint(similarity_dict)
+    # for each pair of tasks, average the similarity scores across all ratios
+    averaged_similarity_dict = {}
     for task1 in task_masks:
         for task2 in task_masks:
-            if (task2 + "_" + task1) in similarity_dict or (task1 + "_" + task2) in similarity_dict:
+            if (task2 + "_" + task1) in averaged_similarity_dict or (task1 + "_" + task2) in averaged_similarity_dict:
                 continue
-            similarity_dict[task1+"_"+task2] = subnet_similarity(task_masks[task1], task_masks[task2], task_saliencies[task1], task_saliencies[task2], net)
-    
-    return similarity_dict
+            averaged_similarity_dict[task1+"_"+task2] = 0
+            for ratio in ratios:
+                averaged_similarity_dict[task1+"_"+task2] += similarity_dict[ratio][task1+"_"+task2]
+            averaged_similarity_dict[task1+"_"+task2] /= len(ratios)
+
+    return averaged_similarity_dict
+
+def store_subnetworks(filename, task_masks, task_saliencies):
+    with open(filename, 'wb') as f:
+        pickle.dump({"masks": task_masks, "sals": task_saliencies}, f)
 
 if __name__ == "__main__":
     warnings.filterwarnings('ignore')
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, help='dataset: choose between nyuv2, cityscapes, taskonomy', default="nyuv2")
-    parser.add_argument('--num_batches',type=int, help='number of batches to estimate importance', default=2)
+    parser.add_argument('--num_batches',type=int, help='number of batches to estimate importance', default=5)
     parser.add_argument('--sim_method', type=str, help='method name', default="iou")
-    parser.add_argument('--sparsity',type=int, help='sparsity level', default=90) # TODO: we should take in a list of sparsities, do average
+    parser.add_argument('--sparsities',type=str, help='sparsity levels', default="30,50,70,90") 
+    parser.add_argument('--subnet_dir',type=str, help='directory to store subnetworks', default="./subnetworks/subnets.txt")
     args = parser.parse_args()
 
     dataset = args.dataset
     num_batches = args.num_batches
     sim_method = args.sim_method
-    sparsity = args.sparsity
+    subnet_dir = args.subnet_dir
+    sparsities = [int(sparsity) for sparsity in args.sparsities.split(",")]
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ################################################################################################
     if dataset == "nyuv2":
@@ -261,10 +287,13 @@ if __name__ == "__main__":
     # otherwise, just modify SceneNetLoss to this since we aren't training anyway.
     criterion = DiSparse_SceneNetLoss(dataset, TASKS, TASKS_NUM_CLASS, LAMBDAS, device, DATA_ROOT)
 
-    keep_ratio = map_sparsity_to_keep_ratio(sparsity, dataset)
-    print(keep_ratio)
+    ratios = map_sparsity_to_keep_ratio(sparsities, dataset)
+    print(ratios)
     
-    task_masks, task_saliencies = compute_task_subnetworks(net, criterion, train_loader, num_batches, keep_ratio, device, tasks=TASKS)
+    task_masks, task_saliencies = compute_task_subnetworks(net, criterion, train_loader, num_batches, ratios, device, tasks=TASKS)
+
+    store_subnetworks(args.subnet_dump, task_masks, task_saliencies)
 
     pairwise_task_similarities = get_pairwise_similarities(task_masks, task_saliencies, net)
+    print("Pairwise Similarity Scores Averaged Across Ratios: ")
     pprint.PrettyPrinter(width=20).pprint(pairwise_task_similarities)
