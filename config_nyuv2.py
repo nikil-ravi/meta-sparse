@@ -2,7 +2,7 @@
 Configuration File Used for Cityscapes Training & Evaluation
 '''
 
-DATA_ROOT = "/home/nravi/DiSparse-Multitask-Model-Compression/data/nyu_v2"
+DATA_ROOT = "/Users/onkardeshpande/code/Stanford/CS330/project/meta-sparse/data/nyu_v2"
 CROP_H = 321
 CROP_W = 321
 TASKS = ["seg", "sn", "depth"]

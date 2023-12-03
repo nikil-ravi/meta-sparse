@@ -54,24 +54,24 @@ def disparse_prune_static(net, criterion, train_loader, num_batches, keep_ratio,
         gt_batch = None
         preds = None
         loss = None
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
         gt_batch = next(train_iter)
-        gt_batch["img"] = Variable(gt_batch["img"]).cuda()
+        gt_batch["img"] = Variable(gt_batch["img"])
         if "seg" in gt_batch:
-            gt_batch["seg"] = Variable(gt_batch["seg"]).cuda()
+            gt_batch["seg"] = Variable(gt_batch["seg"])
         if "depth" in gt_batch:
-            gt_batch["depth"] = Variable(gt_batch["depth"]).cuda()
+            gt_batch["depth"] = Variable(gt_batch["depth"])
         if "normal" in gt_batch:
-            gt_batch["normal"] = Variable(gt_batch["normal"]).cuda()
+            gt_batch["normal"] = Variable(gt_batch["normal"])
         if "keypoint" in gt_batch:
-            gt_batch["keypoint"] = Variable(gt_batch["keypoint"]).cuda()
+            gt_batch["keypoint"] = Variable(gt_batch["keypoint"])
         if "edge" in gt_batch:
-            gt_batch["edge"] = Variable(gt_batch["edge"]).cuda()
+            gt_batch["edge"] = Variable(gt_batch["edge"])
         
         for i, task in enumerate(tasks):
             preds = None
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             test_net.zero_grad()
             preds = test_net.forward(gt_batch['img'])
             loss = criterion(preds, gt_batch, cur_task=task)
@@ -119,84 +119,6 @@ def disparse_prune_static(net, criterion, train_loader, num_batches, keep_ratio,
 
     exit()
 
-    # Use PyTorch Prune to set hooks
-    parameters_to_prune = []
-
-    for layer in net.modules():
-        if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
-            parameters_to_prune.append((layer, 'weight'))
-
-    # Use a prune ratio of 0 to set dummy pruning hooks
-    prune.global_unstructured(
-        parameters_to_prune,
-        pruning_method=prune.L1Unstructured,
-        amount=0,
-    )
-    # Compute the final mask
-    idxs = [0] * len(tasks)
-    ct = 0
-    for name, layer in net.named_modules():
-        if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
-            # Get the intersection.
-            # The following is equivalent to elementwise OR by demorgan
-            # Only all tasks agree to prune, we prune
-            if 'backbone' in name:
-                final_mask = None
-                for i, task in enumerate(tasks):
-                    if final_mask is None:
-                        final_mask = ~keep_masks[task][ct].data
-                    else:
-                        final_mask = final_mask & (~keep_masks[task][ct].data)
-                layer.weight_mask.data = ~final_mask
-                ct += 1
-                idxs = [x+1 for x in idxs]
-                
-            elif 'task1' in name:
-                task_name = tasks[0]
-                idx = idxs[0]
-                layer.weight_mask.data = keep_masks[task_name][idx].data
-                ct += 1
-                idxs[0] += 1
-                
-            elif 'task2' in name:
-                task_name = tasks[1]
-                idx = idxs[1]
-                layer.weight_mask.data = keep_masks[task_name][idx].data
-                ct += 1
-                idxs[1] += 1
-                
-            elif 'task3' in name:
-                task_name = tasks[2]
-                idx = idxs[2]
-                layer.weight_mask.data = keep_masks[task_name][idx].data
-                ct += 1
-                idxs[2] += 1
-                
-            elif 'task4' in name:
-                task_name = tasks[3]
-                idx = idxs[3]
-                layer.weight_mask.data = keep_masks[task_name][idx].data
-                ct += 1
-                idxs[3] += 1
-                
-            elif 'task5' in name:
-                task_name = tasks[4]
-                idx = idxs[4]
-                layer.weight_mask.data = keep_masks[task_name][idx].data
-                ct += 1
-                idxs[4] += 1
-
-            else:
-                print(f"Unrecognized Name: {name}!")
-    # Forward
-    for module in net.modules():
-        # Check if it's basic block
-        if isinstance(module, nn.modules.conv.Conv2d) or isinstance(module, nn.modules.Linear):
-            module.weight = module.weight_orig * module.weight_mask
-            
-    print_sparsity(net)
-    return net
-
 ################################################################################################
 # DiSparse prune in the pretrained setup
 # net: model to sparsify, should be a SceneNet class
@@ -216,21 +138,21 @@ def disparse_prune_pretrained(net, criterion, train_loader, num_batches, keep_ra
         gt_batch = None
         preds = None
         loss = None
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
         gt_batch = next(train_iter)
-        gt_batch["img"] = Variable(gt_batch["img"]).cuda()
+        gt_batch["img"] = Variable(gt_batch["img"])
         if "seg" in gt_batch:
-            gt_batch["seg"] = Variable(gt_batch["seg"]).cuda()
+            gt_batch["seg"] = Variable(gt_batch["seg"])
         if "depth" in gt_batch:
-            gt_batch["depth"] = Variable(gt_batch["depth"]).cuda()
+            gt_batch["depth"] = Variable(gt_batch["depth"])
         if "normal" in gt_batch:
-            gt_batch["normal"] = Variable(gt_batch["normal"]).cuda()
+            gt_batch["normal"] = Variable(gt_batch["normal"])
             
         
         for i, task in enumerate(tasks):
             preds = None
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             test_net.zero_grad()
             preds = test_net.forward(gt_batch['img'])
             loss = criterion(preds, gt_batch, cur_task=task)
