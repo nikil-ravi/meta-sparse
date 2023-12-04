@@ -1,23 +1,66 @@
-from copy import deepcopy
 import torch.nn as nn
 import torch
-import types
 from torch.autograd import Variable
-import torch.nn.utils.prune as prune
-import torch.nn.functional as F
+import types
 import pickle
 import argparse
 import warnings
 from scene_net import *
 from dataloaders import * 
 from torch.utils.data import DataLoader
-from torchvision import models
-from loss import SceneNetLoss, DiSparse_SceneNetLoss
+from loss import DiSparse_SceneNetLoss
 import pprint
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-################################################################################################
-# Overwrite PyTorch forward function for Conv2D and Linear to take the mask into account
+parser = argparse.ArgumentParser()
+parser.add_argument('--dataset', type=str, help='dataset: choose between nyuv2, cityscapes, taskonomy', default="nyuv2")
+parser.add_argument('--num_batches',type=int, help='number of batches to estimate importance', default=5)
+parser.add_argument('--num_seeds',type=int, help='number of seeds to average over for each sparsity ratio', default=5)
+parser.add_argument('--sim_method', type=str, help='method name', default="iou")
+parser.add_argument('--sparsities',type=str, help='sparsity levels', default="30,50,70,90") 
+parser.add_argument('--dump_dir',type=str, help='directory to store subnetworks', default="./subnetworks/")
+parser.add_argument('--force_run', action='store_true')
+
+def cached(f, force_run, cache_filename):
+    path = cache_filename+".pkl"
+    if force_run or not os.path.exists(path):
+        ret = f()
+        with open(path, "wb") as f: 
+            pickle.dump(ret, f)
+        return ret
+    else:
+        print("Using cached", cache_filename)
+        with open(path, "rb") as f: 
+            return pickle.load(f)
+        
+
+def get_args():
+    args = parser.parse_args()
+    args.sparsities = [int(sparsity) for sparsity in args.sparsities.split(",")]
+    return args
+
+def get_dataset(dataset):
+    if dataset == "nyuv2":
+        train_dataset = NYU_v2(DATA_ROOT, 'train', crop_h=CROP_H, crop_w=CROP_W)
+        train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, num_workers = 8, shuffle=True, pin_memory=True)
+        test_dataset = NYU_v2(DATA_ROOT, 'test')
+        test_loader = DataLoader(test_dataset, batch_size = 1, num_workers = 8, shuffle=True, pin_memory=True)
+    elif dataset == "cityscapes":
+        train_dataset = CityScapes(DATA_ROOT, 'train', crop_h=CROP_H, crop_w=CROP_W)
+        train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, num_workers = 8, shuffle=True, pin_memory=True)
+        test_dataset = CityScapes(DATA_ROOT, 'test')
+        test_loader = DataLoader(test_dataset, batch_size = 1, num_workers = 8, shuffle=True, pin_memory=True)
+    elif dataset == "taskonomy":
+        train_dataset = Taskonomy(DATA_ROOT, 'train', crop_h=CROP_H, crop_w=CROP_W)
+        train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE//4, num_workers = 8, shuffle=True, pin_memory=True)
+        test_dataset = Taskonomy(DATA_ROOT, 'test')
+        test_loader = DataLoader(test_dataset, batch_size = 1, num_workers = 8, shuffle=True, pin_memory=True)
+    else:
+        raise Exception("Unrecognized Dataset Name.")
+
+    return train_dataset, train_loader, test_dataset, test_loader
+
 def hook_forward_conv2d(self, x):
         return F.conv2d(x, self.weight * self.weight_mask, self.bias,
                         self.stride, self.padding, self.dilation, self.groups)
@@ -25,9 +68,8 @@ def hook_forward_conv2d(self, x):
 def hook_forward_linear(self, x):
         return F.linear(x, self.weight * self.weight_mask, self.bias)
 
-def map_sparsity_to_keep_ratio(sparsities, dataset):
-
-    ratios = []
+def get_keep_ratios(sparsities, dataset):
+    keep_ratios = []
 
     for sparsity in sparsities:
         if dataset == "nyuv2":
@@ -64,27 +106,35 @@ def map_sparsity_to_keep_ratio(sparsities, dataset):
             else:
                 keep_ratio = (100 - sparsity) / 100
         else:
-            print("Unrecognized Dataset Name.")
-            exit()
+            raise Exception("Unrecognized Dataset Name.")
 
-        ratios.append(keep_ratio)
+        keep_ratios.append(keep_ratio)
+    return keep_ratios    
 
-    return ratios    
 
-################################################################################################
-# Returns masks and saliency scores of parameters for each task.
-# net: model to sparsify, should be of SceneNet class
-# criterion: loss function to calculate per task gradients, should be of DiSparse_SceneNetLoss class
-# train_loader: dataloader to fetch data batches used to estimate importance
-# keep_ratio: how many parameters to keep
-# tasks: set of tasks
-def compute_task_subnetworks(net, criterion, train_loader, num_batches, ratios, device, tasks, seed=0):
-    test_net = deepcopy(net)
+def get_batch(train_iter):
+    batch = next(train_iter)
+    batch["img"] = Variable(batch["img"]).to(DEVICE)
+    if "seg" in batch:
+        batch["seg"] = Variable(batch["seg"]).to(DEVICE)
+    if "depth" in batch:
+        batch["depth"] = Variable(batch["depth"]).to(DEVICE)
+    if "normal" in batch:
+        batch["normal"] = Variable(batch["normal"]).to(DEVICE)
+    if "keypoint" in batch:
+        batch["keypoint"] = Variable(batch["keypoint"]).to(DEVICE)
+    if "edge" in batch:
+        batch["edge"] = Variable(batch["edge"]).to(DEVICE)
+
+    return batch
+
+
+def compute_grad_abs(net, criterion, train_loader, num_batches, tasks, seed):
     grads_abs = {}
     for task in tasks:
         grads_abs[task] = []
-    # Register Hook
-    for layer in test_net.modules():
+    
+    for layer in net.modules():
         if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
             layer.weight_mask = nn.Parameter(torch.ones_like(layer.weight))
             nn.init.xavier_normal_(layer.weight)
@@ -97,40 +147,21 @@ def compute_task_subnetworks(net, criterion, train_loader, num_batches, ratios, 
         if isinstance(layer, nn.Linear):
             layer.forward = types.MethodType(hook_forward_linear, layer)
 
-    # Estimate importance per task in a data-driven manner
     train_iter = iter(train_loader)
     for i in range(num_batches):
+        print(f"Seed {seed}: Batch {i}/{num_batches}")
 
-        print("batch: ", i)
-
-        gt_batch = None
-        preds = None
-        loss = None
-        if torch.cuda.is_available(): torch.cuda.empty_cache()
-
-        gt_batch = next(train_iter)
-        gt_batch["img"] = Variable(gt_batch["img"]).to(device)
-        if "seg" in gt_batch:
-            gt_batch["seg"] = Variable(gt_batch["seg"]).to(device)
-        if "depth" in gt_batch:
-            gt_batch["depth"] = Variable(gt_batch["depth"]).to(device)
-        if "normal" in gt_batch:
-            gt_batch["normal"] = Variable(gt_batch["normal"]).to(device)
-        if "keypoint" in gt_batch:
-            gt_batch["keypoint"] = Variable(gt_batch["keypoint"]).to(device)
-        if "edge" in gt_batch:
-            gt_batch["edge"] = Variable(gt_batch["edge"]).to(device)
-        
+        batch = get_batch(train_iter)
         for i, task in enumerate(tasks):
-            preds = None
             if torch.cuda.is_available(): torch.cuda.empty_cache()
-            test_net.zero_grad()
-            preds = test_net.forward(gt_batch['img'])
-            loss = criterion(preds, gt_batch, cur_task=task)
+
+            net.zero_grad()
+            preds = net.forward(batch['img'])
+            loss = criterion(preds, batch, cur_task=task)
             loss.backward()
+
             ct = 0
-            
-            for name, layer in test_net.named_modules():
+            for name, layer in net.named_modules():
                 if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
                     if 'backbone' in name or f'task{i+1}' in name:
                         if len(grads_abs[task]) > ct:
@@ -139,47 +170,43 @@ def compute_task_subnetworks(net, criterion, train_loader, num_batches, ratios, 
                             grads_abs[task].append(torch.abs(layer.weight_mask.grad.data))
                         ct += 1
 
-    preds = None
-    loss = None
-    # Calculate Threshold
-    masks = {}
-    saliencies = {}
-    for keep_ratio in ratios:
-        masks[keep_ratio] = {}
-        saliencies[keep_ratio] = {}
-        for task in tasks:
-            masks[keep_ratio][task] = []
-            saliencies[keep_ratio][task] = []
-    
-    # print(ratios)
+    return grads_abs
 
-    for task in tasks:
-        cur_grads_abs = grads_abs[task]
-        all_scores = torch.cat([torch.flatten(x) for x in cur_grads_abs])
-        norm_factor = torch.sum(all_scores)
-        all_scores.div_(norm_factor)
-    
-        for keep_ratio in ratios:
 
-            # print(keep_ratio)
+def compute_task_subnetwork(grad_abs, task, keep_ratio):
+    masks = []
+    saliencies = []
 
-            num_params_to_keep = int(len(all_scores) * keep_ratio)
-            threshold, _ = torch.topk(all_scores, num_params_to_keep, sorted=True)
-            acceptable_score = threshold[-1]
+    cur_grads_abs = grad_abs[task]
+    all_scores = torch.cat([torch.flatten(x) for x in cur_grads_abs])
+    norm_factor = torch.sum(all_scores)
+    all_scores.div_(norm_factor)
 
-            for g in cur_grads_abs:
-                masks[keep_ratio][task].append(((g / norm_factor) >= acceptable_score).int())
-                saliencies[keep_ratio][task].append((g/norm_factor))
+    num_params_to_keep = int(len(all_scores) * keep_ratio)
+    threshold, _ = torch.topk(all_scores, num_params_to_keep, sorted=True)
+    acceptable_score = threshold[-1]
+
+    for g in cur_grads_abs:
+        masks.append(((g / norm_factor) >= acceptable_score).int())
+        saliencies.append((g/norm_factor))
 
     return masks, saliencies
 
-# Layer-wise similarity score.
-def layer_sim(mask1, mask2, sal1 = None, sal2 = None, sim_metric = "epi"):
+def weighted_average(vals, weights=None):
+    if weights is None:
+        weights = [1.0]*len(vals)
+    sum = 0.0
+    weight_sum = 0.0
+    for i in range(len(weights)):
+        sum += weights[i]*vals[i]
+        weight_sum += weights[i]
 
-    n1 = torch.count_nonzero(mask1).item()
-    n2 = torch.count_nonzero(mask2).item()
+    return sum/weight_sum
     
+def layer_sim(mask1, mask2, sal1, sal2, sim_metric):
     if sim_metric == "epi":
+        n1 = torch.count_nonzero(mask1).item()
+        n2 = torch.count_nonzero(mask2).item()
         similarity = 1 - (abs(n1 - n2) / (n1 + n2))
     elif sim_metric == "iou":
         intersection = torch.logical_and(mask1, mask2)
@@ -187,145 +214,96 @@ def layer_sim(mask1, mask2, sal1 = None, sal2 = None, sim_metric = "epi"):
         similarity = (torch.count_nonzero(intersection) / torch.count_nonzero(union)).item()
     elif sim_metric == "sals":
         similarity = torch.nn.functional.cosine_similarity(sal1.flatten(), sal2.flatten(), dim=0, eps=1e-8)
+    else:
+        raise Exception("Unknown similarity metric")
 
     return similarity
 
-def weighted_average(numbers):
-    n = len(numbers)
-    weights = []
-    for i in range(n):
-        #weights.append(n-i)
-        weights.append(1)
-    sum = 0
-    weights_sum = 0
-    for weight, val in zip(weights, numbers):
-        sum += weight * val
-        weights_sum += weight
-    return sum/weights_sum
 
-def subnet_similarity(mask1, mask2, sal1, sal2, model):
+def subnet_similarity(mask1, mask2, sal1, sal2, model, sim_method):
     sim_scores = []
     count = 0
 
     for (name, module) in model.named_modules():
         if (isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear)) and ("backbone" in name):
-            params = module.parameters()
-            sim_scores.append(layer_sim(mask1[count].bool(), mask2[count].bool(), sal1[count], sal2[count], sim_metric="epi"))
+            sim_scores.append(layer_sim(mask1[count].bool(), mask2[count].bool(), sal1[count], sal2[count], sim_metric=sim_method))
             count += 1
     
     return weighted_average(sim_scores)
 
-def get_pairwise_similarity_dict(task_masks, task_saliencies, net, ratios):
-    similarity_dict = {}
-    for ratio in ratios:
-        similarity_dict[ratio] = {}
-        for task1 in task_masks[ratio]:
-            for task2 in task_masks[ratio]:
-                if (task2 + "_" + task1) in similarity_dict[ratio] or (task1 + "_" + task2) in similarity_dict[ratio]:
-                    continue
-                similarity_dict[ratio][task1+"_"+task2] = subnet_similarity(task_masks[ratio][task1], task_masks[ratio][task2], task_saliencies[ratio][task1], task_saliencies[ratio][task2], net)
-    
-    print("Similarity Scores With Different Ratios: ")
-    pprint.PrettyPrinter(width=20).pprint(similarity_dict)
-    return similarity_dict
-    # for each pair of tasks, average the similarity scores across all ratios
+def get_task_id(task1, task2):
+    return task1+"_"+task2
 
-def get_averaged_similarites(similarity_dicts):
-    averaged_similarity_dict = {}
-    tasks = TASKS
+def tasks_in_keys(task1, task2, keys):
+    return get_task_id(task1, task2) in keys or get_task_id(task2, task1) in keys
+
+def get_pairwise_similarity(masks, saliencies, model, sim_method):
+    pairwise_similarity = {}
+    tasks = list(masks.keys())
+    ratios = masks[tasks[0]].keys()
     for task1 in tasks:
         for task2 in tasks:
-            if (task2 + "_" + task1) in averaged_similarity_dict or (task1 + "_" + task2) in averaged_similarity_dict:
-                continue
-            averaged_similarity_dict[task1+"_"+task2] = 0.0
-            for ratio in ratios:
-                ratio_sim = 0.0
-                for similarity_dict in similarity_dicts:
-                    ratio_sim += similarity_dict[ratio][task1+"_"+task2]
-                ratio_sim /= len(similarity_dicts)
-                averaged_similarity_dict[task1+"_"+task2] += ratio_sim
-            averaged_similarity_dict[task1+"_"+task2] /= len(ratios)
-
-    return averaged_similarity_dict
-
-def store_subnetworks(dir, task_masks, task_saliencies, seed):
-    os.makedirs(dir, exist_ok=True)
-    with open(dir+f"/subnets_seed_{seed}.txt", 'wb') as f:
-        pickle.dump({"masks": task_masks, "sals": task_saliencies}, f)
+            if tasks_in_keys(task1, task2, pairwise_similarity.keys()): continue
+            pairwise_similarity[get_task_id(task1, task2)] = weighted_average(
+                    [subnet_similarity(
+                        masks[task1][ratio],
+                        saliencies[task1][ratio],
+                        masks[task2][ratio],
+                        saliencies[task2][ratio],
+                        model, sim_method
+                        ) for ratio in ratios]
+                    )
+    return pairwise_similarity
+            
 
 if __name__ == "__main__":
     warnings.filterwarnings('ignore')
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, help='dataset: choose between nyuv2, cityscapes, taskonomy', default="nyuv2")
-    parser.add_argument('--num_batches',type=int, help='number of batches to estimate importance', default=5)
-    parser.add_argument('--num_seeds',type=int, help='number of seeds to average over for each sparsity ratio', default=5)
-    parser.add_argument('--sim_method', type=str, help='method name', default="iou")
-    parser.add_argument('--sparsities',type=str, help='sparsity levels', default="30,50,70,90") 
-    parser.add_argument('--subnet_dump_dir',type=str, help='directory to store subnetworks', default="./subnetworks/")
-    parser.add_argument('--ignore_cache', action='store_true')
-    args = parser.parse_args()
+    args = get_args()
 
-    dataset = args.dataset
-    num_batches = args.num_batches
-    sim_method = args.sim_method
-    subnet_dump_dir = args.subnet_dump_dir
-    num_seeds = args.num_seeds
-    ignore_cache = args.ignore_cache
-    sparsities = [int(sparsity) for sparsity in args.sparsities.split(",")]
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ################################################################################################
-    if dataset == "nyuv2":
+    # Can't remove this
+    if args.dataset == "nyuv2":
         from config_nyuv2 import *
-        train_dataset = NYU_v2(DATA_ROOT, 'train', crop_h=CROP_H, crop_w=CROP_W)
-        train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, num_workers = 8, shuffle=True, pin_memory=True)
-        test_dataset = NYU_v2(DATA_ROOT, 'test')
-        test_loader = DataLoader(test_dataset, batch_size = 1, num_workers = 8, shuffle=True, pin_memory=True)
-    elif dataset == "cityscapes":
+    elif args.dataset == "cityscapes":
         from config_cityscapes import *
-        train_dataset = CityScapes(DATA_ROOT, 'train', crop_h=CROP_H, crop_w=CROP_W)
-        train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE, num_workers = 8, shuffle=True, pin_memory=True)
-        test_dataset = CityScapes(DATA_ROOT, 'test')
-        test_loader = DataLoader(test_dataset, batch_size = 1, num_workers = 8, shuffle=True, pin_memory=True)
-    elif dataset == "taskonomy":
+    elif args.dataset == "taskonomy":
         from config_taskonomy import *
-        train_dataset = Taskonomy(DATA_ROOT, 'train', crop_h=CROP_H, crop_w=CROP_W)
-        train_loader = DataLoader(train_dataset, batch_size = BATCH_SIZE//4, num_workers = 8, shuffle=True, pin_memory=True)
-        test_dataset = Taskonomy(DATA_ROOT, 'test')
-        test_loader = DataLoader(test_dataset, batch_size = 1, num_workers = 8, shuffle=True, pin_memory=True)
-    else:
-        print("Unrecognized Dataset Name.")
-        exit()
 
-    criterion = DiSparse_SceneNetLoss(dataset, TASKS, TASKS_NUM_CLASS, LAMBDAS, device, DATA_ROOT)
+    _, train_loader, _, _ = get_dataset(args.dataset)
+    criterion = DiSparse_SceneNetLoss(args.dataset, TASKS, TASKS_NUM_CLASS, LAMBDAS, DEVICE, DATA_ROOT)
+    keep_ratios = get_keep_ratios(args.sparsities, args.dataset)
 
-    ratios = map_sparsity_to_keep_ratio(sparsities, dataset)
-    # TODO: how is this different from SceneNetLoss? if it is significantly different, we should rename it.
-    # otherwise, just modify SceneNetLoss to this since we aren't training anyway.
-    # print(ratios)
-    
+    os.makedirs(args.dump_dir, exist_ok=True)
+    base_dir = os.path.join(args.dump_dir, args.dataset)
+    os.makedirs(base_dir, exist_ok=True)
+
     pairwise_similarities = []
-    for seed in range(num_seeds):
+    for seed in range(args.num_seeds):
         torch.manual_seed(seed)
         if torch.cuda.is_available(): torch.cuda.manual_seed(seed)
+        net = SceneNet(TASKS_NUM_CLASS).to(DEVICE)
 
-        net = SceneNet(TASKS_NUM_CLASS).to(device)
+        grad_abs = cached(
+                lambda:compute_grad_abs(net, criterion, train_loader, args.num_batches, TASKS, seed),
+                args.force_run, 
+                os.path.join(base_dir, f"grad_abs_s{seed}_v0"))
 
-        os.makedirs(subnet_dump_dir, exist_ok=True)
-        subnet_dump_filename = os.path.join(subnet_dump_dir,f"subnet_seed_{seed}.pkl")
-        if not ignore_cache and not os.path.isfile(subnet_dump_filename):
-            task_masks, task_saliencies = compute_task_subnetworks(net, criterion, train_loader, num_batches, ratios, device, tasks=TASKS, seed=seed)
-            with open(subnet_dump_filename, 'wb') as f:
-                pickle.dump({"masks": task_masks, "sals": task_saliencies}, f)
-        else:
-            with open(subnet_dump_filename, 'rb') as f:
-                subnet = pickle.load(f)
-                task_masks = subnet["masks"]
-                task_saliencies = subnet["sals"]
+        masks = {}
+        saliencies = {}
+        for task in grad_abs.keys():
+            masks[task] = {}
+            saliencies[task] = {}
+            for keep_ratio in keep_ratios:
+                masks[task][keep_ratio], saliencies[task][keep_ratio] = cached(
+                        lambda: compute_task_subnetwork(grad_abs, task, keep_ratio),
+                        args.force_run,
+                        os.path.join(base_dir, f"subnet_s{seed}_t{task}_r{keep_ratio}_v0"))
 
-        pairwise_similarity_dict = get_pairwise_similarity_dict(task_masks, task_saliencies, net, ratios)
-        pairwise_similarities.append(pairwise_similarity_dict)
+        pairwise_similarities.append(get_pairwise_similarity(
+            masks, saliencies, net, args.sim_method
+            ))
 
-    averaged_similarities = get_averaged_similarites(pairwise_similarities)
+    average_pairwise_similarities = {
+            key:weighted_average([pairwise_similarity[key] for pairwise_similarity in pairwise_similarities]) for key in pairwise_similarities[0].keys()
+            }
     print("Pairwise Similarity Scores Averaged Across Ratios and Seeds: ")
-    pprint.PrettyPrinter(width=20).pprint(averaged_similarities)
+    pprint.PrettyPrinter(width=20).pprint(average_pairwise_similarities)
