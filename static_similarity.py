@@ -130,9 +130,9 @@ def get_batch(train_iter):
 
 
 def compute_grad_abs(net, criterion, train_loader, num_batches, tasks, seed):
-    grads_abs = {}
+    grad_abs = {}
     for task in tasks:
-        grads_abs[task] = []
+        grad_abs[task] = []
     
     for layer in net.modules():
         if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
@@ -164,13 +164,13 @@ def compute_grad_abs(net, criterion, train_loader, num_batches, tasks, seed):
             for name, layer in net.named_modules():
                 if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
                     if 'backbone' in name or f'task{i+1}' in name:
-                        if len(grads_abs[task]) > ct:
-                            grads_abs[task][ct] += torch.abs(layer.weight_mask.grad.data)
+                        if len(grad_abs[task]) > ct:
+                            grad_abs[task][ct] += torch.abs(layer.weight_mask.grad.data).to("cpu")
                         else:
-                            grads_abs[task].append(torch.abs(layer.weight_mask.grad.data))
+                            grad_abs[task].append(torch.abs(layer.weight_mask.grad.data).to("cpu"))
                         ct += 1
 
-    return grads_abs
+    return grad_abs
 
 
 def compute_task_subnetwork(grad_abs, task, keep_ratio):
@@ -240,19 +240,17 @@ def tasks_in_keys(task1, task2, keys):
 def get_pairwise_similarity(masks, saliencies, model, sim_method):
     pairwise_similarity = {}
     tasks = list(masks.keys())
-    ratios = masks[tasks[0]].keys()
+    ratios = list(masks[tasks[0]].keys())
     for task1 in tasks:
         for task2 in tasks:
             if tasks_in_keys(task1, task2, pairwise_similarity.keys()): continue
-            pairwise_similarity[get_task_id(task1, task2)] = weighted_average(
-                    [subnet_similarity(
+            pairwise_similarity[get_task_id(task1, task2)] = weighted_average([subnet_similarity(
                         masks[task1][ratio],
-                        saliencies[task1][ratio],
                         masks[task2][ratio],
+                        saliencies[task1][ratio],
                         saliencies[task2][ratio],
                         model, sim_method
-                        ) for ratio in ratios]
-                    )
+                ) for ratio in ratios])
     return pairwise_similarity
             
 
