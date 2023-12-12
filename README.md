@@ -75,6 +75,14 @@ Example:
 python3 iou_analysis.py --dataset nyuv2
 ```
 
+### Computing similarity scores
+
+```
+python static_similarity.py
+```
+
+Refer to json2tab.py for script to generate all results as a tsv output.
+
 ## Results
 <div align="center">
   <img src="Figs/NYU_res.png" width="100%">
