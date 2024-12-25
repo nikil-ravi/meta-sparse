@@ -1,17 +1,24 @@
-# DiSparse: Disentangled Sparsification for Multitask Model Compression
+# Meta-Sparse: Efficient Task-Relationship Estimation With Dominant Subnet Structures
 
-This repository is for DiSparse method introduced in the following paper accepted by CVPR2022:
+This repository contains code for our project Meta-Sparse, done as part of CS 330: Deep Multi-Task and Meta-Learning. The goal is to be able to measure task-similarity efficiently with no end-to-end training.
 
-DiSparse: Disentangled Sparsification for Multitask Model Compression\
-Xinglong Sun, Ali Hassani, Zhangyang Wang, Gao Huang, Humphrey Shi
 
-## Introduction
-Despite the popularity of Model Compression and Multitask Learning, how to effectively compress a multitask model has been less thoroughly analyzed due to the challenging entanglement of tasks in the parameter space. In this paper, we propose DiSparse, a simple, effective, and first-of-its-kind multitask pruning and sparse training scheme. We consider each task independently by disentangling the importance measurement and take the unanimous decisions among all tasks when performing parameter pruning and selection. Our experimental results demonstrate superior performance on various configurations and settings compared to popular sparse training and pruning methods. Besides the effectiveness in compression, DiSparse also provides a powerful tool to the multitask learning community. Surprisingly, we even observed better performance than some dedicated multitask learning methods in several cases despite the high model sparsity enforced by DiSparse. We analyzed the pruning masks generated with DiSparse and observed strikingly similar sparse network architecture identified by each task even before the training starts. We also observe the existence of a "watershed" layer where the task relatedness sharply drops, implying no benefits in continued parameters sharing. 
+## Description
+
+Deep multi-task learning involves training a single neural network to handle multiple tasks by leveraging commonalities and shared structure between tasks. An important notion in this regard is that of task similarity- if we could know in advance which tasks are similar, and/or which tasks are unrelated/dissimilar, we could leverage this structure to select tasks to co-train our multi-task network on, allowing it to maximize the amount of information it can reuse across tasks. 
+
+This becomes especially relevant when computational costs are prohibitive since one would have to train over all possible combinations of task groupings and select the grouping with the best co-training performance.
+
+Our method draws inspiration from model pruning literature. Intuitively, _**tasks having strong relationships should exhibit similar dominant sub-network structures within the shared encoder**_. We use a SNIP-like criterion (no training required!) to get importance scores that give us dominant subnetworks and compute the similarity between these task-specific subnetworks to quantitatively estimate the similarity between tasks.
+
+Our [report](https://github.com/nikil-ravi/meta-sparse/blob/main/Efficient_Task_Relationship_Estimation_with_Dominant_Subnet_Structures-1.pdf) and [poster](https://github.com/nikil-ravi/meta-sparse/blob/main/330%20project.pdf) has further discussion of methods and results.
+
 
 <div align="center">
-  <img src="Figs/flowchart_resize.png" width="100%">
-  Overview of our method.
+  <img src="Figs/meta-sparse-overview.png" width="50%" alt="Overview of approach to calculate Task Similarity">
+  <p>An overview of our approach to calculate Task Similarity.</p>
 </div>
+
 
 ## Prerequisites
 ### Datasets
