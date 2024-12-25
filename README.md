@@ -109,16 +109,5 @@ Refer to json2tab.py for script to generate all results as a tsv output.
 </div>
 
 ## Acknowledgement
-Some dataloading and evaluation code is from:
-https://github.com/sunxm2357/AdaShare
 
-## Citations
-If you find this repo useful to your project or research, please cite our paper below:
-
-@inproceedings{sun2022disparse,\
-  title={DiSparse: Disentangled Sparsification for Multitask Model Compression},\
-  author={Sun, Xinglong and Hassani, Ali and Wang, Zhangyang and Huang, Gao and Shi, Humphrey},\
-  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},\
-  pages={12382--12392},\
-  year={2022}
-}
+This repo builds on top of [DiSparse](https://github.com/SHI-Labs/DiSparse-Multitask-Model-Compression).
